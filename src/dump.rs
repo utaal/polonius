@@ -30,7 +30,7 @@ pub(crate) fn dump_output(
         };
     }
 
-    dump_output_fields![errors, move_errors];
+    dump_output_fields![errors, move_errors, partial_move_errors];
 
     dump_rows(
         &mut writer_for(output_dir, "subset_errors")?,
@@ -51,6 +51,7 @@ pub(crate) fn dump_output(
             var_drop_live_on_entry,
             path_maybe_initialized_on_exit,
             path_maybe_uninitialized_on_exit,
+            child_path_maybe_uninitialized_on_exit,
             var_maybe_partly_initialized_on_exit
         ];
     }

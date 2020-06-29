@@ -16,10 +16,12 @@ struct TransitivePaths<T: FactTypes> {
 struct InitializationStatus<T: FactTypes> {
     var_maybe_partly_initialized_on_exit: Relation<(T::Variable, T::Point)>,
     move_error: Relation<(T::Path, T::Point)>,
+    partial_move_error: Relation<(T::Path, T::Point)>,
 }
 
 pub(super) struct InitializationResult<T: FactTypes>(
     pub(super) Relation<(T::Variable, T::Point)>,
+    pub(super) Relation<(T::Path, T::Point)>,
     pub(super) Relation<(T::Path, T::Point)>,
 );
 
@@ -120,9 +122,18 @@ fn compute_transitive_paths<T: FactTypes>(
 fn compute_move_errors<T: FactTypes>(
     ctx: TransitivePaths<T>,
     cfg_edge: &Relation<(T::Point, T::Point)>,
+    child_path: Vec<(T::Path, T::Path)>,
+    path_assigned_at_base: Vec<(T::Path, T::Point)>,
     output: &mut Output<T>,
 ) -> InitializationStatus<T> {
     let mut iteration = Iteration::new();
+
+    // parent_path(parent, child)
+    let parent_path: Relation<(T::Path, T::Path)> =
+        Relation::from_iter(child_path.into_iter().map(|(child, parent)| (parent, child)));
+
+    let path_assigned_at_base: Relation<(T::Path, T::Point)> = path_assigned_at_base.into();
+
     // Variables
 
     // var_maybe_partly_initialized_on_exit(var, point): Upon leaving `point`,
@@ -146,6 +157,14 @@ fn compute_move_errors<T: FactTypes>(
     // move_error(Path, Point): There is an access to `Path` at `Point`, but
     // `Path` is potentially moved (or never initialised).
     let move_error = iteration.variable::<(T::Path, T::Point)>("move_error");
+
+    // intermediate relation
+    let child_path_maybe_uninitialized_on_exit =
+        iteration.variable::<(T::Path, T::Point)>("child_path_maybe_uninitialized_on_entry");
+
+    // partial_move_error(Path, Point): There is an assignment to `Path` at `Point`, but
+    // `Path`'s parent is potentially moved (or never initialised).
+    let partial_move_error = iteration.variable::<(T::Path, T::Point)>("partial_move_error");
 
     // Initial propagation of static relations
 
@@ -204,6 +223,35 @@ fn compute_move_errors<T: FactTypes>(
             ),
             |&(path, _source_node), &target_node| (path, target_node),
         );
+
+        // partial_move_error(ParentPath, TargetNode) :-
+        //   path_maybe_uninitialized_on_exit(ParentPath, SourceNode),
+        //   parent_path(ParentPath, ChildPath)
+        //   cfg_edge(SourceNode, TargetNode),
+        //   path_assigned_at(ChildPath, TargetNode).
+        // via child_path_maybe_uninitialized_on_exit
+        
+        // child_path_maybe_uninitialized_on_exit(ChildPath, SourceNode) :-
+        //   path_maybe_uninitialized_on_exit(ParentPath, SourceNode),
+        //   parent_path(ParentPath, ChildPath)
+        child_path_maybe_uninitialized_on_exit.from_leapjoin(
+            &path_maybe_uninitialized_on_exit,
+            parent_path.extend_with(|&(parent, _source_node)| parent),
+            |&(_parent, source_node), &child| (child, source_node));
+
+        // partial_move_error(Path, TargetNode) :-
+        //   child_path_maybe_uninitialized_on_exit(Path, SourceNode),
+        //   cfg_edge(SourceNode, TargetNode),
+        //   path_assigned_at(Path, TargetNode).
+        partial_move_error.from_leapjoin(
+            &child_path_maybe_uninitialized_on_exit,
+            (
+                cfg_edge.extend_with(|&(_path, source_node)| source_node),
+                path_assigned_at_base
+                    .extend_with(|&(path, _source_node)| path),
+            ),
+            |&(path, _source_node), &target_node| (path, target_node),
+        );
     }
 
     if output.dump_enabled {
@@ -222,11 +270,20 @@ fn compute_move_errors<T: FactTypes>(
                 .or_default()
                 .push(path);
         }
+
+        for &(path, location) in child_path_maybe_uninitialized_on_exit.complete().iter() {
+            output
+                .child_path_maybe_uninitialized_on_exit
+                .entry(location)
+                .or_default()
+                .push(path);
+        }
     }
 
     InitializationStatus {
         var_maybe_partly_initialized_on_exit: var_maybe_partly_initialized_on_exit.complete(),
         move_error: move_error.complete(),
+        partial_move_error: partial_move_error.complete(),
     }
 }
 
@@ -252,8 +309,8 @@ pub(super) fn compute<T: FactTypes>(
     let timer = Instant::now();
 
     let transitive_paths = compute_transitive_paths::<T>(
-        ctx.child_path,
-        ctx.path_assigned_at_base,
+        ctx.child_path.clone(),
+        ctx.path_assigned_at_base.clone(),
         ctx.path_moved_at_base,
         ctx.path_accessed_at_base,
         ctx.path_is_var,
@@ -263,7 +320,8 @@ pub(super) fn compute<T: FactTypes>(
     let InitializationStatus {
         var_maybe_partly_initialized_on_exit,
         move_error,
-    } = compute_move_errors::<T>(transitive_paths, cfg_edge, output);
+        partial_move_error,
+    } = compute_move_errors::<T>(transitive_paths, cfg_edge, ctx.child_path, ctx.path_assigned_at_base, output);
     info!(
         "initialization phase 2: {} move errors in {:?}",
         move_error.elements.len(),
@@ -280,5 +338,5 @@ pub(super) fn compute<T: FactTypes>(
         }
     }
 
-    InitializationResult(var_maybe_partly_initialized_on_exit, move_error)
+    InitializationResult(var_maybe_partly_initialized_on_exit, move_error, partial_move_error)
 }

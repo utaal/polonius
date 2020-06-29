@@ -78,6 +78,7 @@ pub struct Output<T: FactTypes> {
     pub errors: FxHashMap<T::Point, Vec<T::Loan>>,
     pub subset_errors: FxHashMap<T::Point, BTreeSet<(T::Origin, T::Origin)>>,
     pub move_errors: FxHashMap<T::Point, Vec<T::Path>>,
+    pub partial_move_errors: FxHashMap<T::Point, Vec<T::Path>>,
 
     pub dump_enabled: bool,
 
@@ -93,6 +94,7 @@ pub struct Output<T: FactTypes> {
     pub var_drop_live_on_entry: FxHashMap<T::Point, Vec<T::Variable>>,
     pub path_maybe_initialized_on_exit: FxHashMap<T::Point, Vec<T::Path>>,
     pub path_maybe_uninitialized_on_exit: FxHashMap<T::Point, Vec<T::Path>>,
+    pub child_path_maybe_uninitialized_on_exit: FxHashMap<T::Point, Vec<T::Path>>,
     pub known_contains: FxHashMap<T::Origin, BTreeSet<T::Loan>>,
     pub var_maybe_partly_initialized_on_exit: FxHashMap<T::Point, Vec<T::Variable>>,
 }
@@ -168,6 +170,7 @@ impl<T: FactTypes> Output<T> {
         let initialization::InitializationResult::<T>(
             var_maybe_partly_initialized_on_exit,
             move_errors,
+            partial_move_errors,
         ) = initialization::compute(initialization_ctx, &cfg_edge, &mut result);
 
         // FIXME: move errors should prevent the computation from continuing: we can't compute
@@ -175,6 +178,10 @@ impl<T: FactTypes> Output<T> {
         // return here.
         for &(path, location) in move_errors.iter() {
             result.move_errors.entry(location).or_default().push(path);
+        }
+
+        for &(path, location) in partial_move_errors.iter() {
+            result.partial_move_errors.entry(location).or_default().push(path);
         }
 
         // 2) Liveness
@@ -408,12 +415,14 @@ impl<T: FactTypes> Output<T> {
             origin_live_on_entry: FxHashMap::default(),
             invalidates: FxHashMap::default(),
             move_errors: FxHashMap::default(),
+            partial_move_errors: FxHashMap::default(),
             subset: FxHashMap::default(),
             subset_anywhere: FxHashMap::default(),
             var_live_on_entry: FxHashMap::default(),
             var_drop_live_on_entry: FxHashMap::default(),
             path_maybe_initialized_on_exit: FxHashMap::default(),
             path_maybe_uninitialized_on_exit: FxHashMap::default(),
+            child_path_maybe_uninitialized_on_exit: FxHashMap::default(),
             var_maybe_partly_initialized_on_exit: FxHashMap::default(),
             known_contains: FxHashMap::default(),
         }
